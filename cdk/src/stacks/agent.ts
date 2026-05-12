@@ -119,7 +119,10 @@ export class AgentStack extends Stack {
       },
     ]);
 
-    const runtimeName = 'jean_cloude';
+    // Sanitize stackName for use in resource names (replace invalid chars with _)
+    // and apply per-resource length limits to prevent multi-stack collisions.
+    const sanitizedStackName = this.stackName.replace(/[^a-zA-Z0-9_]/g, '_');
+    const runtimeName = `jean_cloude_${sanitizedStackName}`.slice(0, 48);
 
     // Log groups (created before runtime so we can reference the name in env vars)
     const applicationLogGroup = new logs.LogGroup(this, 'RuntimeApplicationLogGroup', {
@@ -159,12 +162,13 @@ export class AgentStack extends Stack {
     });
 
     // --- AgentCore Memory (cross-task learning) ---
-    const agentMemory = new AgentMemory(this, 'AgentMemory');
+    const memoryName = `bgagent_memory_${sanitizedStackName}`.slice(0, 48);
+    const agentMemory = new AgentMemory(this, 'AgentMemory', { memoryName });
 
     // --- Bedrock Guardrail for prompt injection detection ---
     // (Declared early so TaskApi — constructed before the runtimes — can reference it.)
     const inputGuardrail = new bedrock.Guardrail(this, 'InputGuardrail', {
-      guardrailName: 'task-input-guardrail',
+      guardrailName: `task-input-guardrail-${this.stackName}`.slice(0, 50),
       description: 'Screens task submissions for prompt injection attacks',
       contentFilters: [
         {
@@ -671,17 +675,13 @@ export class AgentStack extends Stack {
         physicalResourceId: cr.PhysicalResourceId.of('bedrock-invocation-logging'),
         ignoreErrorCodesMatching: '.*',
       },
-      onDelete: {
-        service: 'Bedrock',
-        action: 'deleteModelInvocationLoggingConfiguration',
-        parameters: {},
-        ignoreErrorCodesMatching: '.*',
-      },
+      // onDelete intentionally omitted — model invocation logging is an
+      // account-level singleton; deleting it when one stack is torn down
+      // would disable logging for any other stacks sharing the account.
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           actions: [
             'bedrock:PutModelInvocationLoggingConfiguration',
-            'bedrock:DeleteModelInvocationLoggingConfiguration',
           ],
           resources: ['*'],
         }),
