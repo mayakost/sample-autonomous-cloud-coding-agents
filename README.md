@@ -21,11 +21,11 @@
 
 **ABCA (Autonomous Background Coding Agents on AWS)** is a sample of what a self-hosted background coding agents platform might look like on AWS. Users can create background coding agents, then submit coding tasks to them and the agents work autonomously in the cloud — cloning repos, writing code, running tests, and opening pull requests for review. No human interaction during execution.
 
-The platform is built on AWS CDK with a modular architecture: an input gateway normalizes requests from any channel, a durable orchestrator executes each task according to a blueprint, and isolated compute environments run each agent. Agents learn from past interactions through a tiered memory system backed by AgentCore Memory, and a review feedback loop captures PR review comments to improve future runs.
+The platform is built on AWS CDK with a modular architecture: an input gateway normalizes requests from any channel (CLI, REST API, webhooks, Slack, Linear), a durable orchestrator executes each task according to a blueprint, and isolated compute environments run each agent. Agents learn from past interactions through a tiered memory system backed by AgentCore Memory, and a review feedback loop captures PR review comments to improve future runs.
 
 ## The Use Case
 
-Users submit tasks through webhooks, CLI, Slack,... For each task, the orchestrator executes the blueprint: an isolated environment is provisioned, an agent clones the target GitHub repository, creates a branch, works on the task, and opens a pull request.
+Users submit tasks through the **CLI**, **REST API**, **webhooks**, **Slack** (@mention the bot in any channel), or **Linear** (apply a label to an issue). For each task, the orchestrator executes the blueprint: an isolated environment is provisioned, an agent clones the target GitHub repository, creates a branch, works on the task, and opens a pull request.
 
 Key characteristics:
 
@@ -34,6 +34,7 @@ Key characteristics:
 - **Repository-scoped** — each task targets a specific repo
 - **Outcome-measurable** — the PR is either merged, revised, or rejected
 - **Fire and forget** — submit, forget, review the outcome
+- **Mid-run steering** — send guidance to a running agent with `bgagent nudge`
 - **Learns over time** — the more you use it, the more it self-improves
 
 ## How it works
@@ -131,6 +132,10 @@ Install [mise](https://mise.jdx.dev/getting-started.html) if you want to use rep
 
 Follow the [Developer Guide](./docs/guides/DEVELOPER_GUIDE.md) to set up your environment and deploy the application to your AWS account.
 Then, follow the [User Guide](./docs/guides/USER_GUIDE.md) to learn how to use the system.
+
+Optional integrations to enable additional submission channels:
+- **Slack** — submit tasks by @mentioning the bot and get threaded progress notifications. See the [Slack setup guide](./docs/guides/SLACK_SETUP_GUIDE.md).
+- **Linear** — apply a label to an issue to trigger a task; the agent posts progress comments back on the issue. See the [Linear setup guide](./docs/guides/LINEAR_SETUP_GUIDE.md).
 
 ## Documentation
 
