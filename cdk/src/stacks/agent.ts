@@ -119,7 +119,11 @@ export class AgentStack extends Stack {
       },
     ]);
 
-    const runtimeName = 'jean_cloude';
+    // AgentCore runtimeName is account-scoped: max 48 chars, only a-z A-Z 0-9 _ -.
+    // Embed the stack name so multiple stacks can coexist in the same account.
+    const runtimeName = `jean_cloude_${this.stackName}`
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 48);
 
     // Log groups (created before runtime so we can reference the name in env vars)
     const applicationLogGroup = new logs.LogGroup(this, 'RuntimeApplicationLogGroup', {
@@ -159,12 +163,21 @@ export class AgentStack extends Stack {
     });
 
     // --- AgentCore Memory (cross-task learning) ---
-    const agentMemory = new AgentMemory(this, 'AgentMemory');
+    // Memory names are account-scoped: max 48 chars, only a-z A-Z 0-9 _.
+    // Embed the stack name so multiple stacks can coexist in the same account.
+    const memoryName = `bgagent_memory_${this.stackName}`
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 48);
+    const agentMemory = new AgentMemory(this, 'AgentMemory', { memoryName });
 
     // --- Bedrock Guardrail for prompt injection detection ---
     // (Declared early so TaskApi — constructed before the runtimes — can reference it.)
+    // Guardrail names are account-scoped: max 50 chars (a-zA-Z0-9 _-).
+    // Embed the stack name so multiple stacks can coexist in the same account.
+    const guardrailName = `task-input-guardrail-${this.stackName}`.slice(0, 50);
+
     const inputGuardrail = new bedrock.Guardrail(this, 'InputGuardrail', {
-      guardrailName: 'task-input-guardrail',
+      guardrailName,
       description: 'Screens task submissions for prompt injection attacks',
       contentFilters: [
         {
@@ -671,17 +684,13 @@ export class AgentStack extends Stack {
         physicalResourceId: cr.PhysicalResourceId.of('bedrock-invocation-logging'),
         ignoreErrorCodesMatching: '.*',
       },
-      onDelete: {
-        service: 'Bedrock',
-        action: 'deleteModelInvocationLoggingConfiguration',
-        parameters: {},
-        ignoreErrorCodesMatching: '.*',
-      },
+      // onDelete intentionally omitted: model invocation logging is an account-level
+      // singleton. Deleting it on stack teardown would disrupt any other stacks in
+      // the same account that rely on the same logging configuration.
       policy: cr.AwsCustomResourcePolicy.fromStatements([
         new iam.PolicyStatement({
           actions: [
             'bedrock:PutModelInvocationLoggingConfiguration',
-            'bedrock:DeleteModelInvocationLoggingConfiguration',
           ],
           resources: ['*'],
         }),
