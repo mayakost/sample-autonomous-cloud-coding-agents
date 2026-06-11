@@ -30,6 +30,11 @@ jest.mock('../../src/handlers/shared/linear-feedback', () => ({
   reportIssueFailure: (...args: unknown[]) => reportIssueFailureMock(...args),
 }));
 
+const reportJiraIssueFailureMock = jest.fn();
+jest.mock('../../src/handlers/shared/jira-feedback', () => ({
+  reportIssueFailure: (...args: unknown[]) => reportJiraIssueFailureMock(...args),
+}));
+
 // Stub the unused-but-imported orchestrator helpers so module-init side
 // effects don't try to talk to AWS.
 jest.mock('../../src/handlers/shared/orchestrator', () => ({
@@ -51,8 +56,9 @@ jest.mock('../../src/handlers/shared/compute-strategy', () => ({
 }));
 
 process.env.LINEAR_WORKSPACE_REGISTRY_TABLE_NAME = 'LinearWorkspaceRegistry';
+process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME = 'JiraWorkspaceRegistry';
 
-import { notifyLinearOnConcurrencyCap } from '../../src/handlers/orchestrate-task';
+import { notifyJiraOnConcurrencyCap, notifyLinearOnConcurrencyCap } from '../../src/handlers/orchestrate-task';
 import type { TaskRecord } from '../../src/handlers/shared/types';
 
 function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
@@ -155,5 +161,79 @@ describe('notifyLinearOnConcurrencyCap', () => {
       })),
     ).resolves.toBeUndefined();
     expect(reportIssueFailureMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('notifyJiraOnConcurrencyCap', () => {
+  beforeEach(() => {
+    reportJiraIssueFailureMock.mockReset();
+    reportJiraIssueFailureMock.mockResolvedValue(undefined);
+  });
+
+  test('posts Jira comment when channel_source is jira and issue key + cloudId are set', async () => {
+    await notifyJiraOnConcurrencyCap(task({
+      channel_source: 'jira',
+      channel_metadata: {
+        jira_issue_key: 'ENG-42',
+        jira_cloud_id: 'cloud-1',
+      },
+    }));
+
+    expect(reportJiraIssueFailureMock).toHaveBeenCalledTimes(1);
+    const [ctx, issueKey, message] = reportJiraIssueFailureMock.mock.calls[0];
+    expect(ctx).toEqual({
+      cloudId: 'cloud-1',
+      registryTableName: process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME,
+    });
+    expect(issueKey).toBe('ENG-42');
+    expect(message).toContain('concurrency limit');
+  });
+
+  test('no-ops on non-Jira channels (api / webhook / slack / linear)', async () => {
+    for (const source of ['api', 'webhook', 'slack', 'linear'] as const) {
+      reportJiraIssueFailureMock.mockClear();
+      await notifyJiraOnConcurrencyCap(task({
+        channel_source: source,
+        channel_metadata: { jira_issue_key: 'ENG-42', jira_cloud_id: 'cloud-1' },
+      }));
+      expect(reportJiraIssueFailureMock).not.toHaveBeenCalled();
+    }
+  });
+
+  test('no-ops when channel_metadata is missing the issue key or cloudId (defensive)', async () => {
+    await notifyJiraOnConcurrencyCap(task({
+      channel_source: 'jira',
+      channel_metadata: { jira_cloud_id: 'cloud-1' }, // no jira_issue_key
+    }));
+    await notifyJiraOnConcurrencyCap(task({
+      channel_source: 'jira',
+      channel_metadata: { jira_issue_key: 'ENG-42' }, // no jira_cloud_id
+    }));
+    expect(reportJiraIssueFailureMock).not.toHaveBeenCalled();
+  });
+
+  test('no-ops when JIRA_WORKSPACE_REGISTRY_TABLE_NAME env is not set (logs warn)', async () => {
+    const saved = process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME;
+    delete process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME;
+    try {
+      await notifyJiraOnConcurrencyCap(task({
+        channel_source: 'jira',
+        channel_metadata: { jira_issue_key: 'ENG-42', jira_cloud_id: 'cloud-1' },
+      }));
+      expect(reportJiraIssueFailureMock).not.toHaveBeenCalled();
+    } finally {
+      process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME = saved;
+    }
+  });
+
+  test('reportIssueFailure rejection is swallowed (best-effort, never blocks rejection path)', async () => {
+    reportJiraIssueFailureMock.mockRejectedValue(new Error('boom'));
+    await expect(
+      notifyJiraOnConcurrencyCap(task({
+        channel_source: 'jira',
+        channel_metadata: { jira_issue_key: 'ENG-42', jira_cloud_id: 'cloud-1' },
+      })),
+    ).resolves.toBeUndefined();
+    expect(reportJiraIssueFailureMock).toHaveBeenCalledTimes(1);
   });
 });

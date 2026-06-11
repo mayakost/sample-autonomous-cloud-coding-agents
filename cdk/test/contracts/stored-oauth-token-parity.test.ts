@@ -39,6 +39,8 @@ import * as path from 'path';
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const LAMBDA_RESOLVER = path.join(REPO_ROOT, 'cdk', 'src', 'handlers', 'shared', 'linear-oauth-resolver.ts');
 const CLI_OAUTH = path.join(REPO_ROOT, 'cli', 'src', 'linear-oauth.ts');
+const JIRA_LAMBDA_RESOLVER = path.join(REPO_ROOT, 'cdk', 'src', 'handlers', 'shared', 'jira-oauth-resolver.ts');
+const JIRA_CLI_OAUTH = path.join(REPO_ROOT, 'cli', 'src', 'jira-oauth.ts');
 
 interface InterfaceField {
   readonly name: string;
@@ -104,6 +106,36 @@ describe('StoredOauthToken / StoredLinearOauthToken cross-language parity', () =
     // Optional fields like `webhook_signing_secret` (back-compat for
     // installs predating per-workspace signing) MUST NOT be listed —
     // doing so would reject every existing install on Lambda startup.
+    expect(constFields).toEqual(interfaceRequired);
+  });
+});
+
+describe('StoredOauthToken / StoredJiraOauthToken cross-language parity (Jira)', () => {
+  // Same contract as the Linear pair above: the CLI's `bgagent jira setup`
+  // writes the secret JSON the Lambda-side resolver reads. Drift is a
+  // silent runtime bug.
+  test('Lambda and CLI define the same set of fields with the same optionality', () => {
+    const lambdaSource = fs.readFileSync(JIRA_LAMBDA_RESOLVER, 'utf8');
+    const cliSource = fs.readFileSync(JIRA_CLI_OAUTH, 'utf8');
+
+    const lambdaFields = extractInterfaceFields(lambdaSource, 'StoredOauthToken');
+    const cliFields = extractInterfaceFields(cliSource, 'StoredJiraOauthToken');
+
+    expect(fieldNames(lambdaFields)).toEqual(fieldNames(cliFields));
+    expect(requiredFieldNames(lambdaFields)).toEqual(requiredFieldNames(cliFields));
+    expect(requiredFieldNames(lambdaFields).length).toBeGreaterThanOrEqual(11);
+  });
+
+  test('Lambda STORED_OAUTH_TOKEN_REQUIRED_FIELDS const matches the interface\'s required fields', () => {
+    const lambdaSource = fs.readFileSync(JIRA_LAMBDA_RESOLVER, 'utf8');
+    const interfaceRequired = requiredFieldNames(extractInterfaceFields(lambdaSource, 'StoredOauthToken'));
+
+    const constMatch = /STORED_OAUTH_TOKEN_REQUIRED_FIELDS:\s*ReadonlyArray<keyof StoredOauthToken>\s*=\s*\[([\s\S]*?)\];/.exec(lambdaSource);
+    expect(constMatch).not.toBeNull();
+    const constFields = (constMatch![1].match(/'([a-zA-Z_][a-zA-Z0-9_]*)'/g) ?? [])
+      .map((s) => s.replace(/'/g, ''))
+      .sort();
+
     expect(constFields).toEqual(interfaceRequired);
   });
 });

@@ -71,8 +71,8 @@ export interface JiraIntegrationProps {
  * CDK construct that adds Jira Cloud integration to the ABCA platform.
  *
  * Inbound-only adapter: Jira → webhook → task creation. Outbound progress
- * updates happen agent-side via the Atlassian Remote MCP server (see
- * agent/src/channel_mcp.py), so there is NO DynamoDB Streams consumer
+ * updates happen agent-side via the Jira REST API (see
+ * agent/src/jira_reactions.py), so there is NO DynamoDB Streams consumer
  * and NO outbound-notify Lambda here. Mirrors the Linear adapter shape.
  *
  * Creates:
@@ -132,9 +132,10 @@ export class JiraIntegration extends Construct {
 
     // --- Webhook signing secret (placeholder, populated by `bgagent jira setup`) ---
     // Per-tenant OAuth tokens live in `bgagent-jira-oauth-<cloudId>` secrets
-    // created by the CLI at runtime — not here. This stack-wide secret is
-    // a back-compat fallback for single-tenant installs predating per-
-    // tenant signing.
+    // created by the CLI at runtime — not here. This stack-wide secret
+    // covers Settings-UI webhooks, whose payloads omit `cloudId` and so
+    // can't be verified per-tenant; the processor binds such deliveries
+    // to the sole active tenant (and drops them when that's ambiguous).
     this.webhookSecret = new secretsmanager.Secret(this, 'WebhookSecret', {
       description: 'Jira webhook signing secret — populate via `bgagent jira setup`',
       removalPolicy,

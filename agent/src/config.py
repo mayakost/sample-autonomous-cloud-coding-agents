@@ -332,16 +332,16 @@ def resolve_jira_oauth_token(channel_metadata: dict[str, str] | None = None) -> 
     The orchestrator stamps ``jira_oauth_secret_arn`` into the task
     record's ``channel_metadata`` at task-creation time. We fetch the
     per-tenant secret, parse the token JSON, refresh if expiring, and
-    cache the access_token in ``JIRA_API_TOKEN`` so the Atlassian Remote
-    MCP's ``${JIRA_API_TOKEN}`` placeholder in ``.mcp.json`` resolves.
+    cache the access_token in ``JIRA_API_TOKEN`` so the ``jira_reactions``
+    REST shim (which posts progress comments on the originating issue)
+    can authorize its calls.
 
     For local development, a pre-set ``JIRA_API_TOKEN`` env var
     short-circuits the lookup so the agent can run outside the runtime.
 
-    Returns an empty string when the credential is absent — the agent-side
-    MCP config then renders with an unresolved ``${JIRA_API_TOKEN}``
-    placeholder and the Jira MCP fails closed. This function is only
-    called when ``channel_source == 'jira'``.
+    Returns an empty string when the credential is absent —
+    ``jira_reactions`` then skips its comments (fail closed, logged).
+    This function is only called when ``channel_source == 'jira'``.
 
     Mirrors :func:`resolve_linear_api_token` in shape; differences are
     only the secret key names, env var names, and OAuth endpoint

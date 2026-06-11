@@ -25,7 +25,7 @@ import { logger } from './logger';
  * Atlassian REST v3 API. Used by the webhook processor to give users
  * feedback on pre-container failures (guardrail block, concurrency cap,
  * unmapped project, etc.) — paths where the agent never starts and the
- * agent-side Jira MCP cannot run.
+ * agent-side jira_reactions shim cannot run.
  *
  * Unlike Linear, Jira has no "reaction" primitive. The failure marker
  * (❌) is folded into the comment text instead of attached as a separate

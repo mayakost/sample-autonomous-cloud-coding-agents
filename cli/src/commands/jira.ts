@@ -495,55 +495,51 @@ export function makeJiraCommand(): Command {
         }));
         console.log('  ✓ Recorded tenant in registry');
 
-        // ─── Step 6: Webhook signing secret (per-tenant + stack-wide) ─────
+        // ─── Step 6: Webhook signing secret (per-tenant first) ───────────
         //
         // Atlassian doesn't auto-generate webhook signing secrets — they're
-        // operator-chosen at webhook-create time in the Jira admin UI.
-        // We treat the secret like Linear's: store it on the per-tenant
-        // OAuth bundle (primary verification path) AND mirror to stack-wide
-        // (back-compat fallback).
-        const stackWideAlreadyConfigured = await isWebhookSecretConfigured(sm, webhookSecretArn!);
-        let webhookSigningSecret: string | undefined;
+        // operator-chosen at webhook-create time in the Jira admin UI. Each
+        // tenant gets its OWN secret, stored on the per-tenant OAuth bundle
+        // (the primary verification path). The stack-wide secret is only
+        // populated when still unset (first tenant) — it exists for
+        // Settings-UI webhooks, whose payloads omit `cloudId` and therefore
+        // can't be verified per-tenant. It is deliberately NEVER copied
+        // from the stack-wide value into per-tenant bundles: doing so would
+        // let one shared secret verify *as any tenant*, breaking the
+        // binding between the verified secret and the payload's cloudId.
+        const apiBaseUrl = config.api_url.replace(/\/+$/, '');
+        console.log();
+        console.log('  Webhook signing secret needed for this tenant.');
+        console.log('  In Jira → Settings → System → Webhooks → Create a Webhook:');
+        console.log(`    URL:           ${apiBaseUrl}/jira/webhook`);
+        console.log('    Events:        Issue: created, updated');
+        console.log('    Secret:        choose a strong random value (e.g. `openssl rand -hex 32`)');
+        console.log();
+        const webhookSecret = (await promptSecret('Webhook signing secret: ')).trim();
+        if (!webhookSecret) {
+          throw new CliError('Webhook signing secret is required.');
+        }
 
-        if (stackWideAlreadyConfigured) {
-          console.log('  ✓ Webhook signing secret already configured stack-wide (mirroring to per-tenant)');
-          try {
-            const value = await sm.send(new GetSecretValueCommand({ SecretId: webhookSecretArn! }));
-            if (value.SecretString && !value.SecretString.trim().startsWith('{')) {
-              webhookSigningSecret = value.SecretString;
-            }
-          } catch (err) {
-            console.log(`  ⚠ Could not read stack-wide secret to mirror: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else {
-          const apiBaseUrl = config.api_url.replace(/\/+$/, '');
-          console.log();
-          console.log('  Webhook signing secret needed.');
-          console.log('  In Jira → Settings → System → Webhooks → Create a Webhook:');
-          console.log(`    URL:           ${apiBaseUrl}/jira/webhook`);
-          console.log('    Events:        Issue: created, updated');
-          console.log('    Secret:        choose a strong random value (e.g. `openssl rand -hex 32`)');
-          console.log();
-          const webhookSecret = await promptSecret('Webhook signing secret: ');
-          if (!webhookSecret) {
-            throw new CliError('Webhook signing secret is required.');
-          }
+        const merged: StoredJiraOauthToken = {
+          ...stored,
+          webhook_signing_secret: webhookSecret,
+          updated_at: new Date().toISOString(),
+        };
+        await upsertOauthSecret(sm, secretName, merged, cloudId);
+        console.log('  ✓ Stored signing secret on the per-tenant OAuth bundle');
+
+        const stackWideAlreadyConfigured = await isWebhookSecretConfigured(sm, webhookSecretArn!);
+        if (!stackWideAlreadyConfigured) {
           await sm.send(new PutSecretValueCommand({
             SecretId: webhookSecretArn!,
             SecretString: webhookSecret,
           }));
-          console.log('  ✓ Stored webhook signing secret (stack-wide back-compat)');
-          webhookSigningSecret = webhookSecret;
-        }
-
-        if (webhookSigningSecret) {
-          const merged: StoredJiraOauthToken = {
-            ...stored,
-            webhook_signing_secret: webhookSigningSecret,
-            updated_at: new Date().toISOString(),
-          };
-          await upsertOauthSecret(sm, secretName, merged, cloudId);
-          console.log('  ✓ Mirrored signing secret to per-tenant OAuth bundle');
+          console.log('  ✓ Stored webhook signing secret stack-wide (covers Settings-UI webhooks, which omit cloudId)');
+        } else {
+          console.log('  ✓ Stack-wide webhook secret already configured — left unchanged.');
+          console.log('    Multi-tenant note: Settings-UI webhooks omit cloudId and verify only against the');
+          console.log('    stack-wide secret (first tenant). Additional tenants must use a webhook that');
+          console.log('    carries its own cloudId (e.g. an OAuth-app registered dynamic webhook).');
         }
 
         // ─── Done ─────────────────────────────────────────────────────────
@@ -552,7 +548,7 @@ export function makeJiraCommand(): Command {
         console.log();
         console.log('Next steps:');
         console.log('  1. Map a Jira project to a GitHub repo:');
-        console.log('       bgagent jira map <PROJECT-KEY> --repo owner/repo');
+        console.log(`       bgagent jira map ${cloudId} <PROJECT-KEY> --repo owner/repo`);
         console.log('  2. Link your Jira account so triggered tasks attribute to your platform user:');
         console.log('       (an admin runs `bgagent jira invite-user` to issue you a code; this command');
         console.log('        is not yet implemented — populate the user-mapping row manually for now.)');

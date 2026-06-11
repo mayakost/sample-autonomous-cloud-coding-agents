@@ -46,8 +46,16 @@ process.env.JIRA_WORKSPACE_REGISTRY_TABLE_NAME = 'JiraWorkspaceRegistry';
 
 import { handler } from '../../src/handlers/jira-webhook-processor';
 
-function eventWith(payload: Record<string, unknown>): { raw_body: string } {
-  return { raw_body: JSON.stringify(payload) };
+/**
+ * Default to `verified_via: 'per-tenant'` — the receiver only forwards a
+ * payload `cloudId` as trustworthy on that path. Stack-wide-verification
+ * tests override `verified_via` explicitly.
+ */
+function eventWith(
+  payload: Record<string, unknown>,
+  verifiedVia: 'per-tenant' | 'stack-wide' = 'per-tenant',
+): { raw_body: string; verified_via: 'per-tenant' | 'stack-wide' } {
+  return { raw_body: JSON.stringify(payload), verified_via: verifiedVia };
 }
 
 /** Build a minimal `jira:issue_created` payload with the trigger label
@@ -164,6 +172,58 @@ describe('jira-webhook-processor handler', () => {
     createTaskCoreMock.mockResolvedValue({ task_id: 'T1' });
     await handler(eventWith(payload));
     expect(createTaskCoreMock).toHaveBeenCalled();
+  });
+
+  describe('cloudId trust binding (verified_via)', () => {
+    // The receiver only proves cloudId↔secret binding on the per-tenant
+    // path. On stack-wide verification the body's cloudId is attacker-
+    // controllable (anyone holding the shared secret can claim any tenant),
+    // so the processor must resolve the tenant itself.
+
+    test('stack-wide verification ignores body cloudId and binds to the sole active tenant', async () => {
+      // Payload claims cloud-1; the registry's sole active tenant IS
+      // cloud-1, so the delivery proceeds under that tenant.
+      ddbSend
+        .mockResolvedValueOnce({ Items: [{ jira_cloud_id: 'cloud-1', status: 'active' }] }) // Scan
+        .mockResolvedValueOnce({ Item: { repo: 'org/repo', status: 'active', label_filter: 'bgagent' } })
+        .mockResolvedValueOnce({ Item: { platform_user_id: 'user-1', status: 'active' } });
+      createTaskCoreMock.mockResolvedValue({ statusCode: 201, body: '{}' });
+      await handler(eventWith(issue(), 'stack-wide'));
+      expect(createTaskCoreMock).toHaveBeenCalled();
+      // First DDB call must be the registry Scan — i.e. the processor did
+      // NOT shortcut to the payload cloudId.
+      expect(ddbSend.mock.calls[0][0]._type).toBe('Scan');
+    });
+
+    test('stack-wide verification drops a payload whose cloudId names a DIFFERENT tenant', async () => {
+      // The CRITICAL test: a holder of the stack-wide secret claims
+      // cloud-evil while the sole active tenant is cloud-1. The processor
+      // must drop rather than steer mappings/OAuth at cloud-evil.
+      const payload = issue({ cloudId: 'cloud-evil' });
+      ddbSend.mockResolvedValueOnce({ Items: [{ jira_cloud_id: 'cloud-1', status: 'active' }] });
+      await handler(eventWith(payload, 'stack-wide'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      expect(reportIssueFailureMock).not.toHaveBeenCalled();
+    });
+
+    test('stack-wide verification with multiple active tenants drops even when body has a cloudId', async () => {
+      ddbSend.mockResolvedValueOnce({
+        Items: [
+          { jira_cloud_id: 'cloud-1', status: 'active' },
+          { jira_cloud_id: 'cloud-2', status: 'active' },
+        ],
+      });
+      await handler(eventWith(issue(), 'stack-wide'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+    });
+
+    test('missing verified_via (in-flight deliveries from an older receiver) is treated as untrusted', async () => {
+      // Back-compat path: an event enqueued by the pre-binding receiver has
+      // no verified_via. It must get stack-wide (untrusted) semantics.
+      ddbSend.mockResolvedValueOnce({ Items: [{ jira_cloud_id: 'cloud-other', status: 'active' }] });
+      await handler({ raw_body: JSON.stringify(issue()) });
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+    });
   });
 
   test('skips when project is not onboarded', async () => {
@@ -370,7 +430,7 @@ describe('jira-webhook-processor handler', () => {
       const [, issueKey, message] = reportIssueFailureMock.mock.calls[0];
       expect(issueKey).toBe('ENG-42');
       expect(message).toContain("isn't onboarded");
-      expect(message).toContain('bgagent jira onboard-project');
+      expect(message).toContain('bgagent jira map');
     });
 
     test('posts feedback when project mapping is removed', async () => {

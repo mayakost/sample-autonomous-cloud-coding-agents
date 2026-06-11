@@ -17,7 +17,7 @@ Set up the ABCA Jira Cloud integration so that adding a label to a Jira issue tr
 
 ## How it works
 
-A Jira-site admin creates an Atlassian OAuth 2.0 (3LO) app and authorizes it on the site. The OAuth token bundle is stored in a per-tenant Secrets Manager secret (`bgagent-jira-oauth-<cloudId>`). When a user adds the trigger label to a Jira issue, Jira fires a webhook to ABCA; the receiver verifies the `X-Hub-Signature` HMAC, dedupes, and async-invokes the processor, which resolves the tenant, looks up the project→repo mapping, and creates a task. The agent clones the repo, opens a PR, and comments on the Jira issue via the Atlassian Remote MCP server.
+A Jira-site admin creates an Atlassian OAuth 2.0 (3LO) app and authorizes it on the site. The OAuth token bundle is stored in a per-tenant Secrets Manager secret (`bgagent-jira-oauth-<cloudId>`). When a user adds the trigger label to a Jira issue, Jira fires a webhook to ABCA; the receiver verifies the `X-Hub-Signature` HMAC, dedupes, and async-invokes the processor, which resolves the tenant, looks up the project→repo mapping, and creates a task. The agent clones the repo, opens a PR, and posts progress comments on the Jira issue via the Jira REST v3 API.
 
 **Tenant key.** Everything is indexed on `cloudId` — the Atlassian tenant UUID, *not* the site domain or name. Webhook payloads and the OAuth flow both surface `cloudId`; it is the join key across the project-mapping, user-mapping, and workspace-registry tables.
 
@@ -32,16 +32,17 @@ Jira Cloud webhook
   → existing orchestrator pipeline (unchanged)
 ```
 
-Outbound (Agent → Jira) — MCP only:
+Outbound (Agent → Jira) — REST:
 
 ```
-runner picks task with channel_source="jira"
-  → channel_mcp writes a `jira-server` entry into .mcp.json
-    (Atlassian Remote MCP at https://mcp.atlassian.com/v1/sse,
-     OAuth token resolved from bgagent-jira-oauth-<cloudId>)
-  → Claude Agent SDK exposes Jira tools (mcp__jira-server__*)
-  → agent posts comments / transitions / links the PR via MCP tools
+pipeline picks task with channel_source="jira"
+  → config resolves the OAuth token from bgagent-jira-oauth-<cloudId>
+  → jira_reactions posts a "starting" comment at task start and a
+    terminal "succeeded / failed (+ PR link)" comment at the end
+    (POST /rest/api/3/issue/{key}/comment on api.atlassian.com/ex/jira/{cloudId})
 ```
+
+> **Why REST, not MCP?** Atlassian's Remote MCP server requires an interactive, browser-based OAuth 2.1 flow that a headless agent can't complete, so the agent has no Jira MCP tools — progress comments are posted out-of-band by the pipeline. See [ADR-015](/architecture/adr-015-jira-integration).
 
 There is no DynamoDB Streams consumer and no outbound-notify Lambda — this is an inbound-only adapter, matching Linear.
 
@@ -87,7 +88,7 @@ This runs the OAuth 3LO dance:
 - **Events** — *Issue: created* and *Issue: updated*
 - **Secret** — a strong random value, e.g. `openssl rand -hex 32`
 
-Paste that same secret value back at the `Webhook signing secret:` prompt. ABCA stores it on the per-tenant OAuth bundle (and mirrors it stack-wide), and the receiver looks it up to verify `X-Hub-Signature` on each delivery.
+Paste that same secret value back at the `Webhook signing secret:` prompt. ABCA stores it on the per-tenant OAuth bundle, and the receiver looks it up to verify `X-Hub-Signature` on each delivery. For the **first** tenant only, the same value also populates the stack-wide `JiraWebhookSecret` — that fallback covers Settings-UI webhooks, whose payloads omit `cloudId` and therefore can't be matched to a tenant's own secret. Additional tenants keep their own secrets and are never mirrored stack-wide.
 
 ### 4. Map a project to a repository
 
@@ -123,7 +124,7 @@ Add the trigger label (`bgagent` by default) to a Jira issue in a mapped project
 Atlassian signs each delivery with HMAC-SHA256 over the **raw request body**, delivered as `X-Hub-Signature: sha256=<hex>`. The receiver:
 
 1. Computes `HMAC-SHA256(rawBody, secret)` and compares it constant-time against the header value (tolerating a pasted value with or without the `sha256=` prefix).
-2. Prefers the **per-tenant** signing secret stored on `bgagent-jira-oauth-<cloudId>`; falls back to the stack-wide `JiraWebhookSecret` for installs that predate per-tenant storage.
+2. Prefers the **per-tenant** signing secret stored on `bgagent-jira-oauth-<cloudId>`; falls back to the stack-wide `JiraWebhookSecret` when the payload carries no `cloudId` (Settings-UI webhooks) or the tenant has no per-tenant secret. A delivery verified only by the stack-wide secret is bound to the **sole active tenant** in the registry — the processor refuses a body-supplied `cloudId` on that path and drops the event when zero or multiple tenants are active.
 3. Rejects with 401 on mismatch.
 
 The body must be verified as the *raw unparsed bytes* — never parsed-and-restringified JSON, which would change the byte sequence and break the HMAC.
@@ -136,7 +137,7 @@ The body must be verified as the *raw unparsed bytes* — never parsed-and-restr
 
 ## Webhook dedup
 
-The receiver dedupes on `{issueKey}#{webhookEventTimestamp}` with an 8-hour TTL. Using the event timestamp (rather than event type) means two distinct label-adds in quick succession are not collapsed. Jira retries far less aggressively than Linear, so 8 hours is safe parity.
+The receiver dedupes on `{issueKey}#{webhookEvent}#{timestamp}` with an 8-hour TTL. Retries of the same delivery (same queued-at timestamp) collapse; distinct events — including two label-adds in quick succession — do not. Jira retries far less aggressively than Linear, so 8 hours is safe parity.
 
 ## Usage
 
@@ -168,7 +169,7 @@ aws secretsmanager get-secret-value \
 
 - Verify the per-tenant OAuth secret exists: `aws secretsmanager describe-secret --secret-id bgagent-jira-oauth-<cloudId>`.
 - Verify the registry row's `oauth_secret_arn` matches and `status = 'active'`.
-- Check the agent container logs for the `jira-server` MCP entry being written. Absence means `channel_source` wasn't `jira` on the task, or the tenant OAuth lookup failed.
+- Check the agent container logs for `jira_reactions:` lines. `JIRA_API_TOKEN not set` means the per-tenant OAuth lookup failed (or `channel_source` wasn't `jira` on the task); `auth circuit OPEN` means Atlassian rejected the token repeatedly.
 - A `401` from Atlassian usually means the refresh token was revoked tenant-side — re-run `bgagent jira setup`.
 
 ## Limits and quotas

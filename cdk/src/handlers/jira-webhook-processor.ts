@@ -120,7 +120,7 @@ async function resolveSoleTenantCloudId(): Promise<string | undefined> {
  * Undocumented fields are tolerated.
  */
 interface JiraIssueEvent {
-  readonly webhookEvent: 'jira:issue_created' | 'jira:issue_updated' | string;
+  readonly webhookEvent: string;
   readonly timestamp?: number;
   readonly cloudId?: string;
   readonly user?: {
@@ -155,6 +155,20 @@ interface JiraIssueEvent {
 
 interface ProcessorEvent {
   readonly raw_body: string;
+  /**
+   * How the receiver verified the delivery's signature.
+   *
+   * - `'per-tenant'` — the signature matched the secret stored on the
+   *   tenant the body's `cloudId` names, so that `cloudId` is BOUND to
+   *   the verified secret and may be trusted.
+   * - `'stack-wide'` (or absent, for back-compat with in-flight
+   *   deliveries) — the signature only proves possession of the shared
+   *   stack-wide secret. A body-supplied `cloudId` carries NO binding to
+   *   that secret, so the processor must NOT use it to select a tenant;
+   *   it resolves the sole active tenant from the registry instead and
+   *   drops the event if that resolution is ambiguous.
+   */
+  readonly verified_via?: 'per-tenant' | 'stack-wide';
 }
 
 /**
@@ -169,7 +183,8 @@ interface ProcessorEvent {
  * - Resolve `(cloudId, projectKey)` → repo mapping.
  * - Resolve `(cloudId, accountId)` → platform user mapping.
  * - Call `createTaskCore` with `channelSource: 'jira'` and metadata the
- *   agent uses to address the originating issue via the Jira MCP.
+ *   agent runtime uses to address the originating issue via the Jira REST
+ *   API (`agent/src/jira_reactions.py`).
  */
 export async function handler(event: ProcessorEvent): Promise<void> {
   if (!event.raw_body) {
@@ -201,11 +216,36 @@ export async function handler(event: ProcessorEvent): Promise<void> {
     return;
   }
 
-  // `cloudId` is absent from Settings-UI webhook payloads. For a
-  // single-tenant install we recover it from the registry (see
-  // resolveSoleTenantCloudId); multi-tenant installs must send a webhook
-  // that carries its own cloudId.
-  const cloudId = payload.cloudId ?? (await resolveSoleTenantCloudId());
+  // Tenant resolution depends on how the receiver verified the signature:
+  //
+  // - per-tenant verification bound the body's `cloudId` to the secret that
+  //   verified it, so we can trust it directly.
+  // - stack-wide verification proves only possession of the shared secret —
+  //   a body-supplied `cloudId` is attacker-controllable and must NOT steer
+  //   tenant selection (mappings, user attribution, OAuth bundle). We
+  //   resolve the sole active tenant from the registry instead; if the
+  //   payload names a different tenant, we drop rather than guess.
+  //
+  // `cloudId` is also absent entirely from Settings-UI webhook payloads —
+  // the same sole-tenant fallback covers that case.
+  let cloudId: string | undefined;
+  if (payload.cloudId && event.verified_via === 'per-tenant') {
+    cloudId = payload.cloudId;
+  } else {
+    cloudId = await resolveSoleTenantCloudId();
+    if (payload.cloudId && cloudId && payload.cloudId !== cloudId) {
+      logger.warn(
+        'Jira webhook cloudId not bound by per-tenant verification and differs from the sole active tenant — dropping',
+        {
+          payload_cloud_id: payload.cloudId,
+          sole_tenant_cloud_id: cloudId,
+          issue_key: issue.key,
+          verified_via: event.verified_via ?? 'unknown',
+        },
+      );
+      return;
+    }
+  }
   const projectKey = issue.fields?.project?.key;
   if (!projectKey) {
     logger.info('Jira issue has no project.key — skipping (cannot route to a repo)', {
@@ -244,7 +284,7 @@ export async function handler(event: ProcessorEvent): Promise<void> {
     await safeReportIssueFailure(
       issue.key,
       cloudId,
-      "❌ This Jira project isn't onboarded to ABCA. An admin can onboard it with `bgagent jira onboard-project <projectKey> --repo <owner>/<repo> --label <trigger>`.",
+      "❌ This Jira project isn't onboarded to ABCA. An admin can onboard it with `bgagent jira map <cloud-id> <project-key> --repo <owner>/<repo>`.",
     );
     return;
   }

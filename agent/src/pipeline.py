@@ -724,8 +724,9 @@ def run_task(
             # discover_project_config so the scan picks up the file we just
             # wrote. Resolve the per-channel access token from Secrets
             # Manager *before* writing .mcp.json so the child SDK process
-            # inherits the env var that the MCP server entry references
-            # (${LINEAR_API_TOKEN} / ${JIRA_API_TOKEN}).
+            # inherits the env var the MCP server entry references
+            # (${LINEAR_API_TOKEN}). Jira has no MCP entry — its token only
+            # feeds the jira_reactions REST shim below.
             if config.channel_source == "linear":
                 resolve_linear_api_token(config.channel_metadata)
             elif config.channel_source == "jira":

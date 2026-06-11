@@ -58,17 +58,16 @@ interface JiraWebhookEnvelope {
     readonly key?: string;
     readonly fields?: { readonly project?: { readonly id?: string; readonly key?: string } };
   };
-  /** `cloudId` is delivered as a top-level field on Atlassian Cloud webhooks. */
   readonly matchedWebhookIds?: number[];
   readonly user?: { readonly accountId?: string };
 }
 
 /**
  * Atlassian's webhook payload doesn't always include `cloudId` at the top
- * level — older delivery payloads omit it, and self-hosted webhook
- * configurations don't carry it. We require it for tenant-scoped
- * verification; the receiver passes whatever it can extract through to
- * the processor and lets that step report a clear error if absent.
+ * level — only app/OAuth-registered dynamic webhooks carry it; Settings-UI
+ * webhooks and older delivery payloads omit it. We require it for
+ * tenant-scoped verification; the receiver passes whatever it can extract
+ * through to the processor and lets that step report a clear error if absent.
  */
 interface JiraEnvelopeWithCloud extends JiraWebhookEnvelope {
   readonly cloudId?: string;
@@ -109,7 +108,13 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // table not configured, (b) no cloudId in body, (c) tenant not in registry,
     // or (d) tenant's stored secret lacks `webhook_signing_secret`.
     // Per-tenant MISMATCH and REVOKED are fatal — no fallback.
-    let verified = false;
+    //
+    // `verifiedVia` is forwarded to the processor: a per-tenant match BINDS
+    // the body's `cloudId` to the secret that verified it, so the processor
+    // may trust it. A stack-wide match carries no such binding — the
+    // processor must NOT trust a body-supplied `cloudId` and instead
+    // resolves the sole active tenant itself.
+    let verifiedVia: 'per-tenant' | 'stack-wide' | undefined;
     if (WORKSPACE_REGISTRY_TABLE && payload.cloudId) {
       const result = await verifyJiraRequestForTenant(
         WORKSPACE_REGISTRY_TABLE,
@@ -118,7 +123,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         event.body,
       );
       if (result === 'verified') {
-        verified = true;
+        verifiedVia = 'per-tenant';
       } else if (result === 'mismatch') {
         logger.warn('Jira webhook signature mismatch against per-tenant secret', {
           jira_cloud_id: payload.cloudId,
@@ -133,22 +138,32 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       // 'no-per-tenant-secret' falls through to stack-wide.
     }
 
-    if (!verified) {
+    if (!verifiedVia) {
       if (!await verifyJiraRequest(WEBHOOK_SECRET_ARN, signature, event.body)) {
         logger.warn('Invalid Jira webhook signature', {
           jira_cloud_id: payload.cloudId,
         });
         return jsonResponse(401, { error: 'Invalid signature' });
       }
+      verifiedVia = 'stack-wide';
       logger.info('Jira webhook verified via stack-wide fallback secret', {
         jira_cloud_id: payload.cloudId,
         per_tenant_registry_configured: Boolean(WORKSPACE_REGISTRY_TABLE),
       });
     }
 
-    // Optional advisory replay window (24h). The dedup table catches the
-    // common retry case; this guards against very old replays.
-    if (payload.timestamp !== undefined && !isWebhookTimestampFresh(payload.timestamp)) {
+    // Advisory replay window (24h). The dedup table catches the common retry
+    // case; this guards against very old replays. Atlassian's documented
+    // issue-event payloads always carry `timestamp`, but the field is
+    // technically optional in the envelope — when it's absent we log the
+    // skipped check (rather than fail closed) so the bypass is observable,
+    // and the dedup key below collapses such deliveries to `…#unknown`.
+    if (payload.timestamp === undefined) {
+      logger.warn('Jira webhook has no timestamp — replay-window check skipped', {
+        jira_cloud_id: payload.cloudId,
+        webhookEvent: payload.webhookEvent,
+      });
+    } else if (!isWebhookTimestampFresh(payload.timestamp)) {
       logger.warn('Jira webhook timestamp outside replay window', {
         timestamp: payload.timestamp,
       });
@@ -201,7 +216,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await lambdaClient.send(new InvokeCommand({
         FunctionName: PROCESSOR_FUNCTION_NAME,
         InvocationType: 'Event',
-        Payload: new TextEncoder().encode(JSON.stringify({ raw_body: event.body })),
+        Payload: new TextEncoder().encode(
+          JSON.stringify({ raw_body: event.body, verified_via: verifiedVia }),
+        ),
       }));
     } catch (invokeErr) {
       logger.error('Failed to invoke Jira webhook processor', {

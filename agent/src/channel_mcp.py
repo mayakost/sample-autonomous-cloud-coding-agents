@@ -7,13 +7,19 @@ start and exposes the server's tools.
 
 Currently wired channels:
 - ``linear``  → Linear hosted MCP (``mcp__linear-server__*`` tools)
-- ``jira``    → Atlassian Remote MCP (``mcp__jira-server__*`` tools)
+
+``jira`` deliberately has NO entry: Atlassian's Remote MCP
+(``mcp.atlassian.com``) requires an interactive, browser-based OAuth 2.1
+flow with dynamic client registration and does not accept the stored Jira
+REST OAuth token as a ``Bearer`` header, so it cannot connect from a
+headless agent. Jira progress comments are posted out-of-band by
+``jira_reactions`` (a REST shim wired into the pipeline) instead.
 
 For all other channel sources this is a no-op: no MCP is written, and the
 SDK sees no channel-specific tools.
 
 See: cdk/src/handlers/{linear,jira}-webhook-processor.ts (inbound),
-runner.py (SDK invocation).
+runner.py (SDK invocation), jira_reactions.py (Jira outbound REST shim).
 """
 
 from __future__ import annotations
@@ -52,47 +58,17 @@ def _linear_server_entry() -> dict[str, Any]:
     }
 
 
-# ─── Jira (Atlassian Remote MCP) ─────────────────────────────────────────────
-
-#: Atlassian Remote MCP endpoint — Streamable HTTP transport.
-#:
-#: NOTE: Atlassian's Remote MCP rolled out in mid-2025 and may still be in
-#: preview / gated rollout when this code first deploys. Confirm the public
-#: URL + auth contract before relying on this in production. If gated, fall
-#: back to a REST shim in a future ``jira_reactions.py`` module (Plan B).
-JIRA_MCP_URL = "https://mcp.atlassian.com/v1/sse"
-
-#: Key name inside ``mcpServers``. Tools surface as ``mcp__jira-server__*``
-#: in the Agent SDK. If this changes the agent prompt's channel addendum
-#: must be updated in lockstep.
-JIRA_MCP_SERVER_KEY = "jira-server"
-
-#: Env var name the Jira MCP server entry reads via ``${JIRA_API_TOKEN}``
-#: placeholder expansion. Populated from the per-tenant OAuth secret by
-#: config.resolve_jira_oauth_token.
-JIRA_API_TOKEN_ENV = "JIRA_API_TOKEN"  # noqa: S105 — env var *name*, not a secret value
-
-
-def _jira_server_entry() -> dict[str, Any]:
-    """Build the `mcpServers` entry for Atlassian's Remote MCP."""
-    return {
-        "type": "http",
-        "url": JIRA_MCP_URL,
-        "headers": {
-            "Authorization": f"Bearer ${{{JIRA_API_TOKEN_ENV}}}",
-        },
-    }
-
-
 # ─── Dispatch ────────────────────────────────────────────────────────────────
 
 #: Per-channel ``mcpServers`` entry builder. The channel_source values mirror
 #: ``ChannelSource`` in cdk/src/handlers/shared/types.ts. Sources that don't
-#: have a hosted MCP (api, webhook, slack) intentionally have no entry here —
-#: the gate in ``configure_channel_mcp`` short-circuits on missing keys.
+#: have a usable hosted MCP intentionally have no entry here — the gate in
+#: ``configure_channel_mcp`` short-circuits on missing keys. That includes
+#: ``jira``: the Atlassian Remote MCP cannot authenticate from a headless
+#: agent (see module docstring), so writing an entry would only produce a
+#: confusing "Failed to connect" in every Jira task's logs.
 CHANNEL_MCP_BUILDERS: dict[str, tuple[str, Callable[[], dict[str, Any]]]] = {
     "linear": (LINEAR_MCP_SERVER_KEY, _linear_server_entry),
-    "jira": (JIRA_MCP_SERVER_KEY, _jira_server_entry),
 }
 
 

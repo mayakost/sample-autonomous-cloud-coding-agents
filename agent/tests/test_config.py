@@ -501,8 +501,8 @@ class TestResolveJiraOauthToken:
     The orchestrator stamps `jira_oauth_secret_arn` into the task's
     channel_metadata at creation time. resolve_jira_oauth_token reads the
     secret JSON via boto3, refreshes it if expiring, and caches the
-    access_token in `JIRA_API_TOKEN` for the Atlassian Remote MCP
-    placeholder. Mirrors resolve_linear_api_token; the differences are the
+    access_token in `JIRA_API_TOKEN` for the jira_reactions REST shim.
+    Mirrors resolve_linear_api_token; the differences are the
     secret/env var names and the Atlassian OAuth endpoint (JSON body).
     """
 
