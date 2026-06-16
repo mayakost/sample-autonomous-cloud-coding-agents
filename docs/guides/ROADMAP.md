@@ -78,12 +78,14 @@ What's shipped and what's coming next.
 - [x] **GitHub edit-in-place** - Single status comment per task on the target PR, edited in place as progress events fire (phase, milestone, cost, link)
 - [x] **Routable agent milestones** - Named checkpoints (`pr_created`, `nudge_acknowledged`) unwrapped against allowlist for channel filter matching
 - [x] **Slack notification dispatcher** - FanOut Block Kit messages for Slack-origin tasks (lifecycle events, threaded replies, terminal dedup, in-thread cancel). Generic fallback text for unmapped event types (e.g. some milestones); richer milestone and approval-gate rendering is follow-up work
+- [x] **Deploy-preview screenshots** - Listens for GitHub `deployment_status: success` events from any provider (Vercel, Amplify Hosting, Netlify, GitHub Actions); captures the preview URL via AgentCore Browser; posts a markdown image comment on the open PR (and on the linked Linear issue if Linear is configured). Lambda-only, deterministic, ~10–15 s post-deploy. See [Deploy preview screenshots guide](./DEPLOY_PREVIEW_SCREENSHOTS_GUIDE.md).
 - [ ] **Email dispatcher** - Log-only stub; pending SES integration
 
 ### Channels
 
 - [x] **Slack integration** - @mention task submission, `bgagent slack link` / `setup`, file attachments on submit, threaded progress notifications. See [SLACK_SETUP_GUIDE.md](./SLACK_SETUP_GUIDE.md)
 - [x] **Linear integration** - Label-triggered tasks, `bgagent linear setup` / `link`, progress comments on issues. See [LINEAR_SETUP_GUIDE.md](./LINEAR_SETUP_GUIDE.md)
+- [x] **Jira integration** - Label-triggered tasks on Jira Cloud, `bgagent jira setup` / `map` / `link`, progress comments via the Jira REST v3 API. See [JIRA_SETUP_GUIDE.md](./JIRA_SETUP_GUIDE.md) and [ADR-015](../decisions/ADR-015-jira-integration.md)
 
 ### Observability
 
@@ -223,6 +225,7 @@ Planned capabilities, grouped by theme. Items are independent and may ship in an
 
 | Capability | Description |
 |------------|-------------|
+| **Deployed runtime E2E verification** | **Phase 0 landed:** `@aws-cdk/integ-tests-alpha` + `integ-runner` deploy a trimmed Task API stack to a real account, assert the create-and-persist happy path (task persists at `SUBMITTED`), then tear it down (`mise //cdk:integ`). In CI it runs per-PR via `workflow_run` when the diff touches `cdk/**` or `agent/**`, behind the `integ` environment's admin-approval gate, and posts a required `integ-smoke` status that blocks merge (`workflow_dispatch` retained for manual runs). Phase 1 (full lifecycle / real agent runs) and Phase 2 (channels) follow. See [ADR-013](../decisions/ADR-013-tiered-validation-pyramid.md). |
 | **Admission backlog observability** | Metric and alarm when `SUBMITTED` task depth exceeds an operator threshold (capacity and admission health). |
 | **Admission queue with deferred pickup** | When admission is at capacity, persist tasks in a durable queue instead of failing them. Automatically re-attempt admission and continue processing in FIFO order (with optional priority lanes) as concurrency becomes available. Preserve cancel/idempotency semantics and expose queue position/ETA in task status. |
 | **Safe orchestrator deploys** | Pre-deploy checks for active tasks (drain or warn); blue-green or canary Lambda deploy for the durable orchestrator with rollback on error regressions (`OBSERVABILITY.md`). |
