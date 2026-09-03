@@ -12,14 +12,14 @@ Steps 4–6 offer **ABCA CLI** and **AWS CLI** tabs on each step (ABCA CLI is th
 
 ## Prerequisites
 
-Install these before you begin:
+Install these in the order shown — mise provisions the language runtimes used by the rest of the toolchain.
 
+- **mise** - task runner ([install guide](https://mise.jdx.dev/getting-started.html)). Install and activate this first: it provisions the Node.js version the rest of the toolchain depends on.
+- **Node.js** v20 or later (Node 24 is the supported maximum — see CI matrix). Provided by mise via `mise install` in Step 1 — you don't install it separately.
+- **AWS CDK CLI** - `npm install -g aws-cdk`. Installs into the Node version provisioned by mise, so this must be run after `mise install` in Step 1.
 - **AWS account** with credentials configured (`aws configure`). If you use named profiles, set `AWS_PROFILE` before running any commands in this guide.
 - **Amazon Bedrock** — The agent invokes Claude through Bedrock. IAM `grantInvoke` in the CDK stack is required but **not sufficient**: your account must also satisfy [Amazon Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) for the model you use (including Anthropic first-time use where applicable, Marketplace subscription flow on first serverless use, and a valid payment method for Marketplace-backed models). See **Amazon Bedrock before your first task** after Step 3.
-- **Docker** - for building the agent container image. On an **x86_64** host you also need QEMU/binfmt to build the arm64 (Graviton) image — see the caution in Step 3.
-- **Node.js** v20 or later (Node 24 is the supported maximum — see CI matrix)
-- **mise** - task runner ([install guide](https://mise.jdx.dev/getting-started.html))
-- **AWS CDK CLI** - `npm install -g aws-cdk` (after mise is active)
+- **Docker** - for building the agent container image. On an **x86_64** host you also need QEMU/binfmt to build the arm64 (Graviton) image — see the caution in Step 3. Can be installed at any point — it has no ordering dependency on mise.
 - **GitHub account** — You need a [GitHub profile](https://github.com/join) to fork the sample repository and create a **fine-grained personal access token (PAT)** the agent uses to push branches and open pull requests. A free github.com account is sufficient.
 
 :::note[mise provisions Node, Yarn, and the CDK CLI for you]
